@@ -2,9 +2,9 @@
 #include <iostream>
 #include <vector>
 #include <random>
+using namespace std;
 random_device rd;
 mt19937 rng(rd());
-using namespace std;
 #define all(v) v.begin(), v.end()
 void matvec(const vector<float>& a, const vector<float>& b, vector<float>& c, int n, int m){
     cblas_sgemv(CblasRowMajor, CblasNoTrans, n, m, 1.0f, a.data(), m, b.data(), 1, 0.0f, c.data(), 1);
@@ -29,6 +29,7 @@ float uniform(float lo, float hi){
 float sgmd(float x){
     return 1.0f/(1.0f+exp(-x));
 }
+uniform_real_distribution<float> distf(0.0f, 1.0f);
 float eps=0.003f;
 class l_p{ //perceptron layer, tanh/sigmoid
     public:
@@ -58,8 +59,8 @@ class l_p{ //perceptron layer, tanh/sigmoid
         return opt;
     }
     vector<float> bp(vector<float>& g){
-        matvec_transpose(w, g, e, d_out, d_in);
         for (int i=0;i<d_out;i++) g[i]*=tp?(opt[i]*(1.0f-opt[i])):(1.0f-opt[i]*opt[i]);
+        matvec_transpose(w, g, e, d_out, d_in);
         for (int i=0;i<d_out;i++) b[i]-=lr_b*g[i];
         for (int i=0;i<d_out;i++) for (int j=0;j<d_in;j++) w[i*d_in+j]-=lr_w*g[i]*ipt[j];
         return e;
@@ -91,73 +92,62 @@ class K{ //world knowledge
     float lo=-3.0f, hi=3.0f;
     int tks=0;
     vector<h> m{};
-    vector<vector<float>> rs{};
-    vector<vector<float>> cs{};
     h cur{0, 0.0f, 0.0f};
     K(int din, float lrw, float lrb){
         d=din; lr_w=lrw; lr_b=lrb;
         cur=h(din, lrw, lrb);
     }
-    void t_r(vector<float>& r){ //train on reality
+    void t_r(vector<float>& r){
         float p=cur.f(r)[0];
-        vector<float> e{p};
-        rs.push_back(r);
+        vector<float> e{p-1.0f};
         cur.b(e);
     }
     float s(vector<float> c){ //score
-        float ret=0.0f;
+        float ret=1.0f;
         for (auto th:m){
-            ret+=th.f(c)[0]*th.f(c)[0];
+            ret*=th.f(c)[0]*th.f(c)[0];
         }
         return ret;
     }
-    int t_c(){ //anneal to find counterfactual, then train on it
+    vector<float> anneal(){
         vector<float> c(d, 0.0f);
         vector<float> nc(d, 0.0f);
         for (int i=0;i<d;i++) c[i]=uniform(lo, hi);
         for (int i=0;i<100000;i++){
             nc=c;
             for (int j=0;j<d;j++) nc[j]+=gaussian_noise(0.0f, 0.05f);
-            if (s(nc)<s(c)) swap(c, nc);
-            if (s(c)<eps) break;
+            float os=s(c);
+            float ns=s(nc);
+            float mh=min(1.0f, ns/os); //metropolis-hastings
+            if (distf(rng)<=mh) swap(c, nc);
         }
-        if (s(c)>eps) return 0;
+        return c;
+    }
+    int t_c(){
+        vector<float> c=anneal(); //anneal to find counterfactual, then train on it
         float p=cur.f(c)[0];
-        vector<float> e{p-1.0f};
+        vector<float> e{p};
         cur.b(e);
-        cs.push_back(c);
         return 1;
-    }
-    void rst(){
-        tks=0;
-        cur=h(d, lr_w, lr_b);
-        rs.clear();
-        cs.clear();
-    }
-    bool fit(){
-        float s_r=0.0f;
-        for (auto r:rs){
-            float p=cur.f(r)[0];
-            s_r+=0.5f*p*p;
-        }
-        float s_c=0.0f;
-        for (auto r:cs){
-            float p=cur.f(r)[0];
-            s_c+=0.5f*(p-1.0f)*(p-1.0f);
-        }
-        return s_r+s_c<0.05f; //refine this later
-    }
-    void train(vector<float> r){
-        if (tks>=100000){
-            if (fit()) m.push_back(cur);
-            rst();
-        }
-        t_r(r);
-        t_c();
-        tks++;
     }
 };
 int main(){
-    
+    K world(2, 0.0001f, 0.0001f);
+    for (int i=0;i<10000;i++){
+        float x=distf(rng);
+        float y=x*x;
+        vector<float> smp{x,y};
+        world.t_r(smp);
+        world.t_c();
+    }
+    vector<float> smp{0.0f,1.0f};
+    cout<<world.cur.f({smp})[0]<<'\n';
+    smp={0.0f,0.0f};
+    cout<<world.cur.f({smp})[0]<<'\n';
+    smp={0.5f,0.25f};
+    cout<<world.cur.f({smp})[0]<<'\n';
     return 0;
 }
+/*
+clang++ -std=c++23 -O3 -Wall -DACCELERATE_NEW_LAPACK main.cpp -framework Accelerate -o main && ./main
+*/
